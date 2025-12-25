@@ -19,18 +19,11 @@ function results = simulation(params, output_filename)
         results{rep}.Target = target_pos;
 
         %% Channel generation
-        % [FIX] QUAN TRỌNG: Gọi trực tiếp LOS_channel.
-        % Hàm này trả về [U, M, N]. Khi reshape thành 2D [U, M*N], nó tự động
-        % xếp theo thứ tự Interleaved (AP chạy nhanh, Anten chạy chậm).
-        % Điều này khớp hoàn toàn với logic "diag_idx = m:M:M*N" trong các file WOA.
         H_comm = LOS_channel(AP_pos, UE_pos, params.N_t);
-        
-        % Đảm bảo H_comm luôn là 3D [U, M, N] kể cả khi N=1
+
         if params.N_t == 1 && ismatrix(H_comm)
              H_comm = reshape(H_comm, params.U, params.M_t, params.N_t);
         end
-        
-        % fprintf('H_comm size: %s (Standardized)\n', mat2str(size(H_comm)));
 
         %% Sensing beamsteering
         [sensing_angle, ~] = compute_angle_dist(AP_pos, target_pos);
@@ -114,11 +107,10 @@ function results = simulation(params, output_filename)
             woa_agents = 20;
 
             % ---------------------------------------------------------
-            % [1] CHUẨN BỊ WARM START
+            % [1] WARM START
             % ---------------------------------------------------------
             F_init_woa = zeros(params.M_t*params.N_t, params.U + sens_streams);
 
-            % Ưu tiên dùng kết quả SOCP vì nó đảm bảo Feasible nhất
             if exist('SOCP_NS_feasible', 'var') && SOCP_NS_feasible
                 F_ref_comm = F_star_SOCP_NS;
                 target_sinr_ref = SINR_min_SOCP_NS;
@@ -127,18 +119,14 @@ function results = simulation(params, output_filename)
                 target_sinr_ref = 0; 
             end
 
-            % Tự động detect chiều để lấy dữ liệu đúng
             [d1, d2, d3] = size(F_ref_comm);
             num_ant_total = params.M_t * params.N_t;
             
             if d1 == num_ant_total && d2 == params.U
-                % Dạng [Total_Ant x Users]
                 for u = 1:params.U, F_init_woa(:,u) = F_ref_comm(:, u); end
             elseif d1 == params.U && d2 == num_ant_total
-                % Dạng [Users x Total_Ant]
                 for u = 1:params.U, F_init_woa(:,u) = F_ref_comm(u, :).'; end
             elseif d1 == params.U && d3 == params.N_t
-                % Dạng [Users x M x N] (Thường gặp ở SOCP output)
                 for u = 1:params.U, F_init_woa(:,u) = reshape(F_ref_comm(u,:,:), [], 1); end
             else
                  % Fallback
@@ -155,13 +143,11 @@ function results = simulation(params, output_filename)
             end
 
             % ---------------------------------------------------------
-            % [2] DEBUG LOG: Kiểm tra nhanh chất lượng Warm Start
+            % [2] DEBUG LOG
             % ---------------------------------------------------------
             fprintf('\n--- DEBUG WARM START (Rep %d) ---\n', rep);
             fprintf('F_init size: %s | Target SINR: %.4f | SOCP feasible: %d\n', mat2str(size(F_init_woa)), target_sinr_ref, exist('SOCP_NS_feasible','var') && SOCP_NS_feasible);
             
-            % Kiểm tra SINR
-            % Quan trọng: Dùng đúng reshape Interleaved cho H giống như trong WOA
             [U_db, M_db, N_db] = size(H_comm);
             if N_db > 1, H_db = reshape(H_comm, U_db, []); else, H_db = H_comm; end
             
@@ -190,7 +176,7 @@ function results = simulation(params, output_filename)
                         vio_sinr_db = vio_sinr_db + diff;
                         fprintf('  User %d: SINR=%.2f (Target %.2f) [FAIL]\n', u, sinr_val, target_sinr_ref);
                     else
-                        % fprintf('  User %d: SINR=%.2f [OK]\n', u, sinr_val);
+                        fprintf('  User %d: SINR=%.2f [OK]\n', u, sinr_val);
                     end
                 end
             end

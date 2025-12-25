@@ -2,10 +2,6 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_Chaotic_WOA( ...
     H_comm, sigmasq_comm, gamma_req, sensing_beamsteering, sens_streams, sigmasq_sens, ...
     P_all, max_iter, search_agents, F_init) % <--- SỬA: Nhận tham số F_init
 
-% Chaotic Whale Optimization Algorithm (Chaotic WOA)
-% - Vanilla WOA mechanics + Logistic map for chaos
-% - Warm start capability added
-
     if nargin < 8 || isempty(max_iter), max_iter = 100; end
     if nargin < 9 || isempty(search_agents), search_agents = 30; end
 
@@ -23,7 +19,7 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_Chaotic_WOA( ...
     D_matrices = cell(M,1);
     for m = 1:M
         if N > 1
-            diag_idx = m : M : (M*N); % Logic Interleaved
+            diag_idx = m : M : (M*N); 
         else
             diag_idx = (m-1)*N + (1:N);
         end
@@ -41,15 +37,14 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_Chaotic_WOA( ...
 
     % --- FIX: Apply Warm Start ---
     if nargin >= 10 && ~isempty(F_init)
-        % Gán nghiệm khởi tạo tốt cho agent đầu tiên, chiếu về miền công suất
         X_init = reshape(F_init, 1, dim);
         X_init = project_per_ap(X_init, num_ant, num_streams, P_all, D_matrices);
         X(1, :) = X_init;
     end
 
     % ---- Chaotic variable ----
-    z = rand();      % chaotic seed
-    mu = 4.0;        % logistic map parameter
+    z = rand();      
+    mu = 4.0;        
 
     % Evaluate initial best
     best_pos = X(1,:);
@@ -88,7 +83,6 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_Chaotic_WOA( ...
                 else
                     z = mu*z*(1-z);
                     j = floor(z*search_agents) + 1;
-                    % Bảo đảm index hợp lệ
                     if j < 1, j=1; end; if j > search_agents, j=search_agents; end
                     
                     Xr = X(j,:);

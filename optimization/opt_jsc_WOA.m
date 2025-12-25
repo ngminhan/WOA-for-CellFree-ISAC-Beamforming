@@ -1,11 +1,6 @@
 function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
     H_comm, sigmasq_comm, gamma_req, sensing_beamsteering, sens_streams, sigmasq_sens, ...
-    P_all, max_iter, search_agents, F_init) % <--- SỬA: Nhận tham số F_init
-
-% opt_jsc_WOA: Vanilla Whale Optimization Algorithm (WOA)
-% - Initialization: Random + Warm Start (if provided)
-% - Standard WOA update (encircling / exploration / spiral)
-% - Constraint handling by PENALTY only (no repair, no Deb)
+    P_all, max_iter, search_agents, F_init) 
 
     if nargin < 8 || isempty(max_iter), max_iter = 100; end
     if nargin < 9 || isempty(search_agents), search_agents = 30; end
@@ -24,11 +19,8 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
     D_matrices = cell(M, 1);
     for m = 1:M
         if N > 1
-            % Nếu H là 3D, reshape sẽ làm dữ liệu xen kẽ (Interleaved)
-            % Index của AP m sẽ là: m, m+M, m+2M...
             diag_idx = m : M : (M*N);
         else
-            % Nếu H là 2D (N=1), giữ nguyên logic cũ
             diag_idx = (m-1)*N + (1:N);
         end
         
@@ -44,9 +36,7 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
         X(i, :) = project_per_ap(X(i, :), num_antennas, num_streams, P_all, D_matrices);
     end
 
-    % --- FIX: Sử dụng Warm Start nếu có ---
     if nargin >= 10 && ~isempty(F_init)
-        % Chuyển F_init thành vector hàng, chiếu về miền công suất
         X_init = reshape(F_init, 1, dim);
         X_init = project_per_ap(X_init, num_antennas, num_streams, P_all, D_matrices);
         X(1, :) = X_init;
@@ -56,7 +46,7 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
     best_pos = X(1,:);
     best_fit = fitness(best_pos, H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
     
-    % Kiểm tra các Agent ngẫu nhiên
+    % Check random agent 
     for i = 2:search_agents
         fi = fitness(X(i,:), H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
         if fi > best_fit
@@ -69,15 +59,15 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
     b = 1;
 
     for t = 1:max_iter
-        a_woa = 2 - 2 * (t-1) / (max_iter-1); % 2 -> 0
+        a_woa = 2 - 2 * (t-1) / (max_iter-1); 
 
         for i = 1:search_agents
             r1 = rand(); r2 = rand();
-            A = 2 * a_woa * r1 - a_woa;  % scalar (vanilla)
-            C = 2 * r2;                  % scalar (vanilla)
+            A = 2 * a_woa * r1 - a_woa;  
+            C = 2 * r2;               
 
             p = rand();
-            l = -1 + 2*rand();           % [-1, 1]
+            l = -1 + 2*rand();          
 
             Xi = X(i,:);
 
@@ -99,7 +89,6 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
                 X_new = Dp * exp(b*l) * cos(2*pi*l) + best_pos;
             end
 
-            % (Optional) mild clipping to avoid overflow (not "repair")
             X_new = clip_complex(X_new, 5 * sqrt(P_all/num_streams));
 
             % Project to satisfy per-AP power (repair step)
@@ -185,7 +174,7 @@ function [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_se
         end
 
         sinr_u = signal / (inter + sigma_sq);
-        if sinr_u < gamma * 0.999  % <--- Thêm hệ số dung sai 0.999
+        if sinr_u < gamma * 0.999  
             vio_sinr = vio_sinr + (gamma - sinr_u)/gamma;
         end
     end
