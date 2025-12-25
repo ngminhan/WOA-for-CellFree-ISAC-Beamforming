@@ -6,30 +6,37 @@ clear all;
 %% Prepare Legends
 for i = 3:size(res_table, 2)
     current_name = legend_list{i};
-    
-    % Kiểm tra nếu là WOA
+
+    % ---- Metaheuristic algorithms ----
     if strcmp(current_name, 'WOA')
         legend_list{i} = 'WOA (Meta-heuristic)';
-        continue; % Bỏ qua logic split bên dưới
+        continue;
+    elseif strcmp(current_name, 'CWOA')
+        legend_list{i} = 'Chaotic WOA';
+        continue;
+    elseif strcmp(current_name, 'WOA-PSO')
+        legend_list{i} = 'WOA–PSO Hybrid';
+        continue;
     end
 
+    % ---- Baselines & JSC ----
     txt = strsplit(current_name, '-');
-    
-    % Kiểm tra độ dài mảng sau khi split để tránh lỗi index out of bounds
+
     if length(txt) >= 1
         tf = strsplit(txt{1}, '+');
-        if strcmp('JSC', tf{1})
+
+        if strcmp(tf{1}, 'JSC')
             legend_list{i} = 'JSC Beam Optimization';
-        elseif length(tf) >= 2 % Đảm bảo có đủ phần tử (ví dụ: NS+RZF)
-            legend_list{i} = [tf{1}, ' Sensing - ',  tf{2}, ' Comm'];
+        elseif length(tf) >= 2
+            legend_list{i} = [tf{1}, ' Sensing - ', tf{2}, ' Comm'];
         else
-            % Trường hợp fallback nếu tên không đúng định dạng chuẩn
             legend_list{i} = current_name;
         end
     else
         legend_list{i} = current_name;
     end
 end
+
 
 %% Plot the results
 set_default_plot;
