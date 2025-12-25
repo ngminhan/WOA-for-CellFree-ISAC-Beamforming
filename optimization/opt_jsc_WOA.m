@@ -38,23 +38,23 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
     end
 
     % ---- 1) Initialization ----
-    % Random initialization
+    % Random initialization (scaled per AP to satisfy power)
     X = (randn(search_agents, dim) + 1i * randn(search_agents, dim)) * sqrt(P_all / num_streams);
+    for i = 1:search_agents
+        X(i, :) = project_per_ap(X(i, :), num_antennas, num_streams, P_all, D_matrices);
+    end
 
     % --- FIX: Sử dụng Warm Start nếu có ---
     if nargin >= 10 && ~isempty(F_init)
-        % Chuyển F_init thành vector hàng và gán cho agent đầu tiên
+        % Chuyển F_init thành vector hàng, chiếu về miền công suất
         X_init = reshape(F_init, 1, dim);
+        X_init = project_per_ap(X_init, num_antennas, num_streams, P_all, D_matrices);
         X(1, :) = X_init;
-        % Agent đầu tiên giờ đây mang nghiệm khởi tạo tốt (feasible)
     end
 
     % Evaluate initial best (maximize fitness)
     best_pos = X(1,:);
     best_fit = fitness(best_pos, H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
-
-    % === DEBUG: In ra để kiểm tra xem Warm Start có hoạt động không ===
-    fprintf('Initial Warm Start Fitness: %.4e\n', best_fit);
     
     % Kiểm tra các Agent ngẫu nhiên
     for i = 2:search_agents
@@ -62,7 +62,6 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
         if fi > best_fit
             best_fit = fi;
             best_pos = X(i,:);
-            fprintf('Warning: Random agent %d is better than Warm Start! (Fit: %.4e)\n', i, fi);
         end
     end
 
@@ -103,6 +102,9 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
             % (Optional) mild clipping to avoid overflow (not "repair")
             X_new = clip_complex(X_new, 5 * sqrt(P_all/num_streams));
 
+            % Project to satisfy per-AP power (repair step)
+            X_new = project_per_ap(X_new, num_antennas, num_streams, P_all, D_matrices);
+
             % Replace if better (greedy selection - common in practice)
             f_new = fitness(X_new, H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
             f_old = fitness(Xi,    H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
@@ -133,15 +135,31 @@ function x = clip_complex(x, max_abs)
     x(idx) = x(idx) .* (max_abs ./ mag(idx));
 end
 
+function X_proj = project_per_ap(X_vec, num_antennas, num_streams, P_max, D_mats)
+    F = reshape(X_vec, num_antennas, num_streams);
+    F_sum = F * F';
+    for m = 1:length(D_mats)
+        p_m = real(trace(D_mats{m} * F_sum));
+        if p_m > P_max
+            scale = sqrt(P_max / p_m);
+            diag_idx = find(diag(D_mats{m}));
+            F(diag_idx, :) = F(diag_idx, :) * scale;
+            F_sum = F * F';
+        end
+    end
+    X_proj = reshape(F, 1, []);
+end
+
 function fit = fitness(X_vec, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams)
     F = reshape(X_vec, [], num_streams);
     [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams);
 
-    % Penalty (vanilla constraint handling without repair/Deb)
-    w_sinr = 1e6;
-    w_pow  = 1e6;
-
-    fit = ssnr - w_sinr * vio_sinr - w_pow * vio_pow;
+    % Deb-style feasibility rule: ưu tiên nghiệm khả thi, sau đó tối đa hóa SSNR
+    if vio_sinr > 1e-9 || vio_pow > 1e-9
+        fit = -(vio_sinr + vio_pow);
+    else
+        fit = ssnr;
+    end
 end
 
 function [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams)

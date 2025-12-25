@@ -35,10 +35,15 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA_PSO( ...
     % ---- Initialization ----
     X = (randn(search_agents,dim) + 1i*randn(search_agents,dim)) ...
         * sqrt(P_all/num_streams);
+    for i = 1:search_agents
+        X(i, :) = project_per_ap(X(i, :), num_ant, num_streams, P_all, D_matrices);
+    end
     
     % --- FIX: Apply Warm Start ---
     if nargin >= 10 && ~isempty(F_init)
-        X(1, :) = reshape(F_init, 1, dim);
+        X_init = reshape(F_init, 1, dim);
+        X_init = project_per_ap(X_init, num_ant, num_streams, P_all, D_matrices);
+        X(1, :) = X_init;
     end
 
     V = zeros(search_agents, dim);
@@ -98,6 +103,9 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA_PSO( ...
             % Soft bound (avoid explosion)
             X_new = clip_complex(X_new, 5*sqrt(P_all/num_streams));
 
+            % Project to satisfy per-AP power (repair step)
+            X_new = project_per_ap(X_new, num_ant, num_streams, P_all, D_matrices);
+
             f_new = fitness(X_new, H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
 
             % Update particle
@@ -128,10 +136,30 @@ function x = clip_complex(x, maxabs)
     x(idx) = x(idx) .* (maxabs ./ mag(idx));
 end
 
+function X_proj = project_per_ap(X_vec, num_ant, num_streams, P_max, D_mats)
+    F = reshape(X_vec, num_ant, num_streams);
+    Fsum = F * F';
+    for m = 1:length(D_mats)
+        p_m = real(trace(D_mats{m} * Fsum));
+        if p_m > P_max
+            scale = sqrt(P_max / p_m);
+            diag_idx = find(diag(D_mats{m}));
+            F(diag_idx, :) = F(diag_idx, :) * scale;
+            Fsum = F * F';
+        end
+    end
+    X_proj = reshape(F, 1, []);
+end
+
 function fit = fitness(X_vec, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams)
     F = reshape(X_vec, [], num_streams);
     [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams);
-    fit = ssnr - 1e6*vio_sinr - 1e6*vio_pow;
+
+    if vio_sinr > 1e-9 || vio_pow > 1e-9
+        fit = -(vio_sinr + vio_pow);
+    else
+        fit = ssnr;
+    end
 end
 
 function [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams)

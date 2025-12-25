@@ -19,18 +19,18 @@ function results = simulation(params, output_filename)
         results{rep}.Target = target_pos;
 
         %% Channel generation
-        % [FIX] Tạo kênh truyền và định hình lại cấu trúc chuẩn [U, M, N]
-        H_raw = LOS_channel(AP_pos, UE_pos, params.N_t);
+        % [FIX] QUAN TRỌNG: Gọi trực tiếp LOS_channel.
+        % Hàm này trả về [U, M, N]. Khi reshape thành 2D [U, M*N], nó tự động
+        % xếp theo thứ tự Interleaved (AP chạy nhanh, Anten chạy chậm).
+        % Điều này khớp hoàn toàn với logic "diag_idx = m:M:M*N" trong các file WOA.
+        H_comm = LOS_channel(AP_pos, UE_pos, params.N_t);
         
-        % H_raw thường là dạng 2D [U, M*N] với thứ tự Grouped: AP1(1..N), AP2(1..N)...
-        % Ta cần reshape về [U, N, M] trước (vì N chạy nhanh hơn M trong H_raw)
-        H_temp = reshape(H_raw, params.U, params.N_t, params.M_t);
+        % Đảm bảo H_comm luôn là 3D [U, M, N] kể cả khi N=1
+        if params.N_t == 1 && ismatrix(H_comm)
+             H_comm = reshape(H_comm, params.U, params.M_t, params.N_t);
+        end
         
-        % Sau đó permute về [U, M, N] để khớp với logic của các thuật toán tối ưu
-        H_comm = permute(H_temp, [1, 3, 2]); 
-        
-        % Kiểm tra lại kích thước
-        fprintf('H_comm size: %s\n', mat2str(size(H_comm)));
+        % fprintf('H_comm size: %s (Standardized)\n', mat2str(size(H_comm)));
 
         %% Sensing beamsteering
         [sensing_angle, ~] = compute_angle_dist(AP_pos, target_pos);
@@ -68,11 +68,14 @@ function results = simulation(params, output_filename)
             [F_star_SOCP_NS, SINR_min_SOCP_NS] = bisection_SINR( ...
                 params.bisect.low, params.bisect.high, params.bisect.tol, wrapped_objective);
 
+            SOCP_NS_feasible = ~(isempty(SINR_min_SOCP_NS) || sum(abs(F_star_SOCP_NS(:))) < 1e-8);
+
             results{rep}.power{p_i}{solution_counter} = ...
                 compute_metrics(H_comm, F_star_SOCP_NS, params.sigmasq_ue, ...
                 sensing_beamsteering, F_sensing_NS, params.sigmasq_radar_rcs);
             results{rep}.power{p_i}{solution_counter}.name = 'NS+OPT';
             results{rep}.power{p_i}{solution_counter}.min_SINR_opt = SINR_min_SOCP_NS;
+            results{rep}.power{p_i}{solution_counter}.feasible = SOCP_NS_feasible;
             solution_counter = solution_counter + 1;
 
             % CB + OPT
@@ -111,38 +114,38 @@ function results = simulation(params, output_filename)
             woa_agents = 20;
 
             % ---------------------------------------------------------
-            % [1] CHUẨN BỊ WARM START (Fix logic reshape)
+            % [1] CHUẨN BỊ WARM START
             % ---------------------------------------------------------
             F_init_woa = zeros(params.M_t*params.N_t, params.U + sens_streams);
 
-            % Chọn nguồn tham chiếu
-            if exist('F_star_SOCP_NS', 'var') && sum(abs(F_star_SOCP_NS(:))) > 1e-6
+            % Ưu tiên dùng kết quả SOCP vì nó đảm bảo Feasible nhất
+            if exist('SOCP_NS_feasible', 'var') && SOCP_NS_feasible
                 F_ref_comm = F_star_SOCP_NS;
                 target_sinr_ref = SINR_min_SOCP_NS;
             else
                 F_ref_comm = F_star_RZF;
-                target_sinr_ref = 0; % Không có target cụ thể nếu dùng RZF
+                target_sinr_ref = 0; 
             end
 
-            % Xử lý chiều Communication
+            % Tự động detect chiều để lấy dữ liệu đúng
             [d1, d2, d3] = size(F_ref_comm);
             num_ant_total = params.M_t * params.N_t;
             
             if d1 == num_ant_total && d2 == params.U
-                % Dạng [Antennas x Users]
+                % Dạng [Total_Ant x Users]
                 for u = 1:params.U, F_init_woa(:,u) = F_ref_comm(:, u); end
             elseif d1 == params.U && d2 == num_ant_total
-                % Dạng [Users x Antennas]
+                % Dạng [Users x Total_Ant]
                 for u = 1:params.U, F_init_woa(:,u) = F_ref_comm(u, :).'; end
             elseif d1 == params.U && d3 == params.N_t
-                % Dạng [Users x M x N]
+                % Dạng [Users x M x N] (Thường gặp ở SOCP output)
                 for u = 1:params.U, F_init_woa(:,u) = reshape(F_ref_comm(u,:,:), [], 1); end
             else
-                % Fallback (cố gắng reshape vector)
+                 % Fallback
                  for u = 1:params.U, F_init_woa(:,u) = reshape(F_ref_comm(u,:), [], 1); end
             end
 
-            % Xử lý chiều Sensing
+            % Sensing part
             if size(F_sensing_NS, 1) == sens_streams && size(F_sensing_NS, 2) == params.M_t
                  for s = 1:sens_streams, F_init_woa(:, params.U+s) = reshape(F_sensing_NS(s,:,:), [], 1); end
             elseif size(F_sensing_NS, 2) == sens_streams
@@ -152,12 +155,13 @@ function results = simulation(params, output_filename)
             end
 
             % ---------------------------------------------------------
-            % [2] DEBUG LOG: KIỂM TRA CHẤT LƯỢNG WARM START
+            % [2] DEBUG LOG: Kiểm tra nhanh chất lượng Warm Start
             % ---------------------------------------------------------
             fprintf('\n--- DEBUG WARM START (Rep %d) ---\n', rep);
-            fprintf('F_init size: %s | Target SINR: %.4f\n', mat2str(size(F_init_woa)), target_sinr_ref);
+            fprintf('F_init size: %s | Target SINR: %.4f | SOCP feasible: %d\n', mat2str(size(F_init_woa)), target_sinr_ref, exist('SOCP_NS_feasible','var') && SOCP_NS_feasible);
             
             % Kiểm tra SINR
+            % Quan trọng: Dùng đúng reshape Interleaved cho H giống như trong WOA
             [U_db, M_db, N_db] = size(H_comm);
             if N_db > 1, H_db = reshape(H_comm, U_db, []); else, H_db = H_comm; end
             
@@ -165,45 +169,36 @@ function results = simulation(params, output_filename)
             for u = 1:params.U
                 h_u = H_db(u,:);
                 f_u = F_init_woa(:,u);
+                
+                % Signal
                 sig = abs(h_u * f_u)^2;
+                
+                % Interference
                 inter = 0;
                 for k = 1:(params.U+sens_streams)
-                    if k~=u, inter = inter + abs(h_u * F_init_woa(:,k))^2; end
+                    if k~=u
+                        inter = inter + abs(h_u * F_init_woa(:,k))^2;
+                    end
                 end
+                
                 sinr_val = sig / (inter + params.sigmasq_ue);
                 
-                % Check vi phạm (với dung sai 1%)
-                thresh = target_sinr_ref * 0.99;
-                if sinr_val < thresh
-                    diff = (target_sinr_ref - sinr_val)/target_sinr_ref;
-                    vio_sinr_db = vio_sinr_db + diff;
-                    fprintf('  User %d: SINR=%.2f < %.2f [FAIL diff=%.2e]\n', u, sinr_val, target_sinr_ref, diff);
-                else
-                    % fprintf('  User %d: SINR=%.2f [OK]\n', u, sinr_val);
+                % So sánh với target
+                if target_sinr_ref > 0
+                    if sinr_val < target_sinr_ref * 0.99
+                        diff = (target_sinr_ref - sinr_val)/target_sinr_ref;
+                        vio_sinr_db = vio_sinr_db + diff;
+                        fprintf('  User %d: SINR=%.2f (Target %.2f) [FAIL]\n', u, sinr_val, target_sinr_ref);
+                    else
+                        % fprintf('  User %d: SINR=%.2f [OK]\n', u, sinr_val);
+                    end
                 end
             end
             
-            % Kiểm tra Power
-            vio_pow_db = 0;
-            Fsum_db = F_init_woa * F_init_woa';
-            for m = 1:M_db
-                % Logic index Interleaved cho H [U, M, N]
-                if N_db > 1, idx = m:M_db:(M_db*N_db); else, idx = (m-1)*N_db + (1:N_db); end
-                
-                D_tmp = zeros(M_db*N_db); D_tmp(idx,idx) = eye(N_db);
-                p_m = real(trace(D_tmp * Fsum_db));
-                
-                if p_m > params.P * 1.001
-                    diff = (p_m - params.P)/params.P;
-                    vio_pow_db = vio_pow_db + diff;
-                    fprintf('  AP %d: P=%.2f > %.2f [FAIL diff=%.2e]\n', m, p_m, params.P, diff);
-                end
-            end
-            
-            if vio_sinr_db == 0 && vio_pow_db == 0
-                fprintf('=> WARM START PERFECT (No violations)\n');
+            if vio_sinr_db < 1e-3
+                fprintf('=> WARM START SUCCESS! (Ready for optimization)\n');
             else
-                fprintf('=> WARM START VIOLATED: SINR_vio=%.2e, Pow_vio=%.2e\n', vio_sinr_db, vio_pow_db);
+                fprintf('=> WARM START ISSUE: Total SINR violation = %.4f\n', vio_sinr_db);
             end
             fprintf('--------------------------------------\n');
 
@@ -215,7 +210,7 @@ function results = simulation(params, output_filename)
             [F_all, feas, SSNR] = opt_jsc_WOA( ...
                 H_comm, params.sigmasq_ue, SINR_min_SOCP_NS, ...
                 sensing_beamsteering, sens_streams, params.sigmasq_radar_rcs, ...
-                params.P, woa_iter, woa_agents, F_init_woa); % <-- Passed F_init
+                params.P, woa_iter, woa_agents, F_init_woa); 
 
             [F_comm, F_sens] = split_F(F_all, params);
             results{rep}.power{p_i}{solution_counter} = ...
@@ -230,7 +225,7 @@ function results = simulation(params, output_filename)
             [F_all, feas, SSNR] = opt_jsc_Chaotic_WOA( ...
                 H_comm, params.sigmasq_ue, SINR_min_SOCP_NS, ...
                 sensing_beamsteering, sens_streams, params.sigmasq_radar_rcs, ...
-                params.P, woa_iter, woa_agents, F_init_woa); % <-- Passed F_init
+                params.P, woa_iter, woa_agents, F_init_woa);
 
             [F_comm, F_sens] = split_F(F_all, params);
             results{rep}.power{p_i}{solution_counter} = ...
@@ -245,17 +240,17 @@ function results = simulation(params, output_filename)
             [F_all, feas, SSNR] = opt_jsc_WOA_PSO( ...
                 H_comm, params.sigmasq_ue, SINR_min_SOCP_NS, ...
                 sensing_beamsteering, sens_streams, params.sigmasq_radar_rcs, ...
-                params.P, woa_iter, woa_agents, F_init_woa); % <-- Passed F_init
+                params.P, woa_iter, woa_agents, F_init_woa);
 
-            [F_comm, F_sens] = split_F(F_all, params);
-            results{rep}.power{p_i}{solution_counter} = ...
-                compute_metrics(H_comm, F_comm, params.sigmasq_ue, ...
-                sensing_beamsteering, F_sens, params.sigmasq_radar_rcs);
-            
-            results{rep}.power{p_i}{solution_counter}.name = 'WOA-PSO';
-            results{rep}.power{p_i}{solution_counter}.feasible = feas;
-            results{rep}.power{p_i}{solution_counter}.SSNR_opt = SSNR;
-            solution_counter = solution_counter + 1;
+                [F_comm, F_sens] = split_F(F_all, params);
+                results{rep}.power{p_i}{solution_counter} = ...
+                    compute_metrics(H_comm, F_comm, params.sigmasq_ue, ...
+                    sensing_beamsteering, F_sens, params.sigmasq_radar_rcs);
+                
+                results{rep}.power{p_i}{solution_counter}.name = 'WOA-PSO';
+                results{rep}.power{p_i}{solution_counter}.feasible = feas;
+                results{rep}.power{p_i}{solution_counter}.SSNR_opt = SSNR;
+                solution_counter = solution_counter + 1;
         end
     end
 
@@ -270,8 +265,6 @@ end
 function [F_comm, F_sens] = split_F(F_all, params)
     F_comm = zeros(params.U, params.M_t, params.N_t);
     for u = 1:params.U
-        % Reshape vector cột trở lại thành [M, N] hoặc 3D nếu cần
-        % F_all(:,u) là [M*N, 1]
         F_comm(u,:,:) = reshape(F_all(:,u), params.M_t, params.N_t);
     end
 
