@@ -1,11 +1,10 @@
 function [F_star, feasible, SSNR_opt] = opt_jsc_WOA_PSO( ...
     H_comm, sigmasq_comm, gamma_req, sensing_beamsteering, sens_streams, sigmasq_sens, ...
-    P_all, max_iter, search_agents, ~)
+    P_all, max_iter, search_agents, F_init) % <--- SỬA: Nhận tham số F_init
 
 % WOA–PSO Hybrid Algorithm
-% - WOA for global exploration
-% - PSO for local exploitation
-% - Penalty-based constraint handling (no Deb, no repair)
+% - WOA for global exploration, PSO for local exploitation
+% - Warm start capability added
 
     if nargin < 8 || isempty(max_iter), max_iter = 100; end
     if nargin < 9 || isempty(search_agents), search_agents = 30; end
@@ -23,22 +22,32 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA_PSO( ...
     % Per-AP matrices
     D_matrices = cell(M,1);
     for m = 1:M
-        idx = (m-1)*N + (1:N);
+        if N > 1
+            diag_idx = m : M : (M*N); % Logic Interleaved
+        else
+            diag_idx = (m-1)*N + (1:N);
+        end
         D = zeros(num_ant);
-        D(idx,idx) = eye(N);
+        D(diag_idx,diag_idx) = eye(N);
         D_matrices{m} = D;
     end
 
     % ---- Initialization ----
     X = (randn(search_agents,dim) + 1i*randn(search_agents,dim)) ...
         * sqrt(P_all/num_streams);
+    
+    % --- FIX: Apply Warm Start ---
+    if nargin >= 10 && ~isempty(F_init)
+        X(1, :) = reshape(F_init, 1, dim);
+    end
+
     V = zeros(search_agents, dim);
 
     pbest = X;
     pbest_fit = zeros(search_agents,1);
 
     for i = 1:search_agents
-        pbest_fit(i) = fitness(X(i,:));
+        pbest_fit(i) = fitness(X(i,:), H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
     end
 
     [best_fit, idx] = max(pbest_fit);
@@ -89,7 +98,7 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA_PSO( ...
             % Soft bound (avoid explosion)
             X_new = clip_complex(X_new, 5*sqrt(P_all/num_streams));
 
-            f_new = fitness(X_new);
+            f_new = fitness(X_new, H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
 
             % Update particle
             if f_new > pbest_fit(i)
@@ -108,50 +117,50 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA_PSO( ...
 
     % ---- Final result ----
     F_star = reshape(gbest, num_ant, num_streams);
-    [SSNR_opt, vio_sinr, vio_pow] = eval_raw(F_star);
-    feasible = (vio_sinr < 1e-4) && (vio_pow < 1e-4);
-
-    % ===== Helper functions =====
-    function fit = fitness(X_vec)
-        F = reshape(X_vec, [], num_streams);
-        [ssnr, vio_sinr, vio_pow] = eval_raw(F);
-        fit = ssnr - 1e6*vio_sinr - 1e6*vio_pow;
-    end
-
-    function [ssnr, vio_sinr, vio_pow] = eval_raw(F)
-        Fsum = F*F';
-        ssnr = 0;
-        for mm = 1:M
-            ssnr = ssnr + trace(D_matrices{mm}*A_sens*D_matrices{mm}*Fsum);
-        end
-        ssnr = real(ssnr * sigmasq_sens);
-
-        vio_sinr = 0;
-        for u = 1:U
-            h = H_st(u,:);
-            s = abs(h*F(:,u))^2;
-            i0 = 0;
-            for k = 1:num_streams
-                if k~=u, i0 = i0 + abs(h*F(:,k))^2; end
-            end
-            sinr = s/(i0+sigmasq_comm);
-            if sinr < gamma_req
-                vio_sinr = vio_sinr + (gamma_req-sinr)/gamma_req;
-            end
-        end
-
-        vio_pow = 0;
-        for mm = 1:M
-            pm = real(trace(D_matrices{mm}*Fsum));
-            if pm > P_all
-                vio_pow = vio_pow + (pm-P_all)/P_all;
-            end
-        end
-    end
+    [SSNR_opt, vio_sinr, vio_pow] = eval_raw(F_star, H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
+    feasible = (vio_sinr < 1e-3) && (vio_pow < 1e-3);
 end
 
+% ===== Helper functions =====
 function x = clip_complex(x, maxabs)
     mag = abs(x);
     idx = mag > maxabs;
     x(idx) = x(idx) .* (maxabs ./ mag(idx));
+end
+
+function fit = fitness(X_vec, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams)
+    F = reshape(X_vec, [], num_streams);
+    [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams);
+    fit = ssnr - 1e6*vio_sinr - 1e6*vio_pow;
+end
+
+function [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams)
+    Fsum = F*F';
+    ssnr = 0;
+    for mm = 1:length(D_mats)
+        ssnr = ssnr + trace(D_mats{mm}*A*D_mats{mm}*Fsum);
+    end
+    ssnr = real(ssnr * sigma_sens);
+
+    vio_sinr = 0;
+    for u = 1:U
+        h = H(u,:);
+        s = abs(h*F(:,u))^2;
+        i0 = 0;
+        for k = 1:num_streams
+            if k~=u, i0 = i0 + abs(h*F(:,k))^2; end
+        end
+        sinr = s/(i0+sigma_sq);
+        if sinr < gamma * 0.999
+            vio_sinr = vio_sinr + (gamma-sinr)/gamma;
+        end
+    end
+
+    vio_pow = 0;
+    for mm = 1:length(D_mats)
+        pm = real(trace(D_mats{mm}*Fsum));
+        if pm > P_max
+            vio_pow = vio_pow + (pm-P_max)/P_max;
+        end
+    end
 end

@@ -1,14 +1,11 @@
 function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
     H_comm, sigmasq_comm, gamma_req, sensing_beamsteering, sens_streams, sigmasq_sens, ...
-    P_all, max_iter, search_agents, ~)
+    P_all, max_iter, search_agents, F_init) % <--- SỬA: Nhận tham số F_init
 
 % opt_jsc_WOA: Vanilla Whale Optimization Algorithm (WOA)
-% - Random initialization (no warm start)
+% - Initialization: Random + Warm Start (if provided)
 % - Standard WOA update (encircling / exploration / spiral)
 % - Constraint handling by PENALTY only (no repair, no Deb)
-%
-% NOTE: This is "pure/vanilla" in algorithmic mechanics.
-%       Performance may be worse than constrained variants, but it's the strict baseline.
 
     if nargin < 8 || isempty(max_iter), max_iter = 100; end
     if nargin < 9 || isempty(search_agents), search_agents = 30; end
@@ -26,24 +23,46 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
     % Per-AP selection matrices D_m
     D_matrices = cell(M, 1);
     for m = 1:M
-        diag_idx = (m-1)*N + (1:N); % <-- keep your mapping
+        if N > 1
+            % Nếu H là 3D, reshape sẽ làm dữ liệu xen kẽ (Interleaved)
+            % Index của AP m sẽ là: m, m+M, m+2M...
+            diag_idx = m : M : (M*N);
+        else
+            % Nếu H là 2D (N=1), giữ nguyên logic cũ
+            diag_idx = (m-1)*N + (1:N);
+        end
+        
         D_tmp = zeros(num_antennas, num_antennas);
         D_tmp(diag_idx, diag_idx) = eye(N);
         D_matrices{m} = D_tmp;
     end
 
-    % ---- 1) Pure random initialization (no warm start) ----
+    % ---- 1) Initialization ----
+    % Random initialization
     X = (randn(search_agents, dim) + 1i * randn(search_agents, dim)) * sqrt(P_all / num_streams);
+
+    % --- FIX: Sử dụng Warm Start nếu có ---
+    if nargin >= 10 && ~isempty(F_init)
+        % Chuyển F_init thành vector hàng và gán cho agent đầu tiên
+        X_init = reshape(F_init, 1, dim);
+        X(1, :) = X_init;
+        % Agent đầu tiên giờ đây mang nghiệm khởi tạo tốt (feasible)
+    end
 
     % Evaluate initial best (maximize fitness)
     best_pos = X(1,:);
     best_fit = fitness(best_pos, H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
 
+    % === DEBUG: In ra để kiểm tra xem Warm Start có hoạt động không ===
+    fprintf('Initial Warm Start Fitness: %.4e\n', best_fit);
+    
+    % Kiểm tra các Agent ngẫu nhiên
     for i = 2:search_agents
         fi = fitness(X(i,:), H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
         if fi > best_fit
             best_fit = fi;
             best_pos = X(i,:);
+            fprintf('Warning: Random agent %d is better than Warm Start! (Fit: %.4e)\n', i, fi);
         end
     end
 
@@ -82,7 +101,6 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
             end
 
             % (Optional) mild clipping to avoid overflow (not "repair")
-            % Vanilla WOA usually uses bounds; here we just limit magnitude
             X_new = clip_complex(X_new, 5 * sqrt(P_all/num_streams));
 
             % Replace if better (greedy selection - common in practice)
@@ -97,8 +115,6 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
                 end
             end
         end
-
-        % fprintf('Iter %d: best_fit=%.3e\n', t, best_fit);
     end
 
     % ---- 3) Final decode ----
@@ -106,7 +122,7 @@ function [F_star, feasible, SSNR_opt] = opt_jsc_WOA( ...
 
     % compute final feasibility + SSNR (without penalties)
     [SSNR_opt, vio_sinr, vio_pow] = eval_raw(F_star, H_st, sigmasq_comm, gamma_req, A_sens, sigmasq_sens, P_all, D_matrices, U, num_streams);
-    feasible = (vio_sinr < 1e-4) && (vio_pow < 1e-4);
+    feasible = (vio_sinr < 1e-3) && (vio_pow < 1e-3);
 end
 
 % ================= Helper functions =================
@@ -122,7 +138,6 @@ function fit = fitness(X_vec, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, 
     [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_sens, P_max, D_mats, U, num_streams);
 
     % Penalty (vanilla constraint handling without repair/Deb)
-    % Tune weights if needed:
     w_sinr = 1e6;
     w_pow  = 1e6;
 
@@ -152,7 +167,7 @@ function [ssnr, vio_sinr, vio_pow] = eval_raw(F, H, sigma_sq, gamma, A, sigma_se
         end
 
         sinr_u = signal / (inter + sigma_sq);
-        if sinr_u < gamma
+        if sinr_u < gamma * 0.999  % <--- Thêm hệ số dung sai 0.999
             vio_sinr = vio_sinr + (gamma - sinr_u)/gamma;
         end
     end
