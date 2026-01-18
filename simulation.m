@@ -206,37 +206,6 @@ function results = simulation(params, output_filename)
             results{rep}.power{p_i}{solution_counter}.feasible = feas;
             results{rep}.power{p_i}{solution_counter}.SSNR_opt = SSNR;
             solution_counter = solution_counter + 1;
-
-            % ---- Chaotic WOA ----
-            [F_all, feas, SSNR] = opt_jsc_Chaotic_WOA( ...
-                H_comm, params.sigmasq_ue, SINR_min_SOCP_NS, ...
-                sensing_beamsteering, sens_streams, params.sigmasq_radar_rcs, ...
-                params.P, woa_iter, woa_agents, F_init_woa);
-
-            [F_comm, F_sens] = split_F(F_all, params);
-            results{rep}.power{p_i}{solution_counter} = ...
-                compute_metrics(H_comm, F_comm, params.sigmasq_ue, ...
-                sensing_beamsteering, F_sens, params.sigmasq_radar_rcs);
-            results{rep}.power{p_i}{solution_counter}.name = 'CWOA';
-            results{rep}.power{p_i}{solution_counter}.feasible = feas;
-            results{rep}.power{p_i}{solution_counter}.SSNR_opt = SSNR;
-            solution_counter = solution_counter + 1;
-
-            % ---- WOA–PSO ----
-            [F_all, feas, SSNR] = opt_jsc_WOA_PSO( ...
-                H_comm, params.sigmasq_ue, SINR_min_SOCP_NS, ...
-                sensing_beamsteering, sens_streams, params.sigmasq_radar_rcs, ...
-                params.P, woa_iter, woa_agents, F_init_woa);
-
-                [F_comm, F_sens] = split_F(F_all, params);
-                results{rep}.power{p_i}{solution_counter} = ...
-                    compute_metrics(H_comm, F_comm, params.sigmasq_ue, ...
-                    sensing_beamsteering, F_sens, params.sigmasq_radar_rcs);
-                
-                results{rep}.power{p_i}{solution_counter}.name = 'WOA-PSO';
-                results{rep}.power{p_i}{solution_counter}.feasible = feas;
-                results{rep}.power{p_i}{solution_counter}.SSNR_opt = SSNR;
-                solution_counter = solution_counter + 1;
         end
     end
 
